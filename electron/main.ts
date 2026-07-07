@@ -26,6 +26,7 @@ let settings = loadSettings();
 const isDev = !app.isPackaged;
 const startHidden = process.argv.includes("--hidden");
 const forceShow = process.argv.includes("--show");
+const isElevatedLaunch = process.argv.includes("--elevated");
 
 function showMainWindow(): void {
   if (!mainWindow) return;
@@ -82,19 +83,29 @@ async function stopBlocking(): Promise<void> {
 }
 
 async function ensureAdminIfNeeded(): Promise<boolean> {
-  const needsAdmin = settings.blockingEnabled || settings.launchAtStartup;
-  if (!needsAdmin || (await isRunningAsAdmin())) return true;
+  if (await isRunningAsAdmin()) return true;
+  // Only elevate when blocking is on — not just because startup-on-login is enabled.
+  if (!settings.blockingEnabled) return true;
 
-  const args = startHidden && !forceShow ? ["--hidden"] : ["--show"];
-  if (settings.blockingEnabled) setPendingBlocking(true);
-  await relaunchAsAdmin(args);
-  return false;
+  const args =
+    startHidden && !forceShow
+      ? ["--hidden", "--elevated"]
+      : ["--show", "--elevated"];
+  setPendingBlocking(true);
+  try {
+    await relaunchAsAdmin(args);
+    return false;
+  } catch {
+    // UAC denied — still open the app without blocking.
+    return true;
+  }
 }
 
 async function restoreBlockingOnLaunch(): Promise<void> {
   const pending = consumePendingBlocking();
   const shouldBlock = pending || settings.blockingEnabled;
   if (!shouldBlock) return;
+  if (!(await isRunningAsAdmin())) return;
 
   try {
     await startBlocking();
@@ -105,13 +116,15 @@ async function restoreBlockingOnLaunch(): Promise<void> {
 }
 
 function createWindow(): void {
+  const shouldShow = !startHidden || forceShow;
+
   mainWindow = new BrowserWindow({
     width: 960,
     height: 640,
     minWidth: 800,
     minHeight: 520,
     title: "Focus",
-    show: !startHidden || forceShow,
+    show: false,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -125,6 +138,10 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
   }
+
+  mainWindow.once("ready-to-show", () => {
+    if (shouldShow) showMainWindow();
+  });
 
   mainWindow.on("close", (e) => {
     if (!isQuitting && tray) {
@@ -193,7 +210,7 @@ function registerIpc(): void {
       const admin = await isRunningAsAdmin();
       if (!admin) {
         setPendingBlocking(true);
-        await relaunchAsAdmin(["--show"]);
+        await relaunchAsAdmin(["--show", "--elevated"]);
         return { ...statusPayload(), blocking_enabled: true };
       }
       await startBlocking();
@@ -216,7 +233,7 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
-  if (await isAnotherFocusRunning()) {
+  if (!isElevatedLaunch && (await isAnotherFocusRunning())) {
     signalShowExisting();
     app.quit();
     return;
@@ -244,7 +261,6 @@ app.whenReady().then(async () => {
 
   await restoreBlockingOnLaunch();
 
-  if (forceShow) showMainWindow();
   mainWindow?.webContents.send("blocking-changed");
 
   app.on("activate", () => {

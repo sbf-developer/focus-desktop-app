@@ -94,7 +94,8 @@ export function consumePendingBlocking(): boolean {
 
 export async function relaunchAsAdmin(args: string[] = []): Promise<void> {
   const exe = process.execPath.replace(/'/g, "''");
-  const quoted = args.map((a) => `'${a.replace(/'/g, "''")}'`).join(", ");
+  const withElevated = args.includes("--elevated") ? args : [...args, "--elevated"];
+  const quoted = withElevated.map((a) => `'${a.replace(/'/g, "''")}'`).join(", ");
   const argList = quoted ? `-ArgumentList ${quoted}` : "";
 
   await exec("powershell.exe", [
