@@ -12,6 +12,7 @@ import {
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let isQuitting = false;
 const dns = new DnsBlocker();
 const tracker = new ActivityTracker();
 let blockingEnabled = false;
@@ -112,7 +113,7 @@ function createWindow(): void {
   }
 
   mainWindow.on("close", (e) => {
-    if (tray) {
+    if (!isQuitting && tray) {
       e.preventDefault();
       mainWindow?.hide();
     }
@@ -140,7 +141,10 @@ function createTray(): void {
       },
     },
     { type: "separator" },
-    { label: "Quit", click: () => app.quit() },
+    { label: "Quit", click: () => {
+      isQuitting = true;
+      app.quit();
+    } },
   ]);
   tray.setContextMenu(menu);
   tray.on("double-click", () => {
@@ -220,6 +224,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
   tray = null;
   dns.stop();
   tracker.stop();

@@ -59,7 +59,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Focus"
+      "shortcutName": "Focus",
+      "include": "build/installer.nsh"
     }
   }
 }
