@@ -59,6 +59,23 @@ export function startShowWindowWatcher(show: () => void): void {
   }, 400);
 }
 
+export function quitForInstallPath(): string {
+  return path.join(app.getPath("userData"), "focus-quit-install");
+}
+
+export function startQuitForInstallWatcher(quit: () => void): void {
+  const file = quitForInstallPath();
+  setInterval(() => {
+    if (!fs.existsSync(file)) return;
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      /* ignore */
+    }
+    quit();
+  }, 400);
+}
+
 export function setPendingBlocking(enabled: boolean): void {
   const file = pendingPath();
   if (enabled) {

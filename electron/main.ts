@@ -11,6 +11,7 @@ import {
   setPendingBlocking,
   signalShowExisting,
   startShowWindowWatcher,
+  startQuitForInstallWatcher,
 } from "./admin";
 
 let mainWindow: BrowserWindow | null = null;
@@ -231,6 +232,10 @@ app.whenReady().then(async () => {
   createTray();
   registerIpc();
   startShowWindowWatcher(showMainWindow);
+  startQuitForInstallWatcher(() => {
+    isQuitting = true;
+    app.quit();
+  });
 
   tracker.setOnUpdate((stats) => {
     mainWindow?.webContents.send("stats-updated", stats);
