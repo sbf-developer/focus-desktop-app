@@ -1,5 +1,4 @@
 !macro customHeader
-  ; Elevated installer can stop Focus even when it runs as admin.
   RequestExecutionLevel admin
 !macroend
 
@@ -12,8 +11,12 @@
   Sleep 2500
   nsExec::ExecToLog 'taskkill /F /T /IM Focus.exe'
   Sleep 1500
-  nsExec::ExecToLog 'taskkill /F /T /IM Focus.exe'
-  Sleep 500
+!macroend
+
+!macro CreateFocusShortcuts
+  CreateShortcut "$DESKTOP\Focus.lnk" "$INSTDIR\Focus-Admin.bat" "" "$INSTDIR\Focus.exe" 0
+  CreateDirectory "$SMPROGRAMS\Focus"
+  CreateShortcut "$SMPROGRAMS\Focus\Focus.lnk" "$INSTDIR\Focus-Admin.bat" "" "$INSTDIR\Focus.exe" 0
 !macroend
 
 !macro customInit
@@ -26,4 +29,5 @@
 
 !macro customInstall
   !insertmacro KillFocusProcesses
+  !insertmacro CreateFocusShortcuts
 !macroend

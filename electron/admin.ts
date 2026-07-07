@@ -27,20 +27,6 @@ export async function isRunningAsAdmin(): Promise<boolean> {
   }
 }
 
-export async function isAnotherFocusRunning(): Promise<boolean> {
-  if (process.platform !== "win32") return false;
-  try {
-    const { stdout } = await exec("powershell.exe", [
-      "-NoProfile",
-      "-Command",
-      `$others = Get-Process Focus -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne ${process.pid} }; if ($others) { 'yes' } else { 'no' }`,
-    ]);
-    return stdout.trim() === "yes";
-  } catch {
-    return false;
-  }
-}
-
 export function signalShowExisting(): void {
   fs.mkdirSync(path.dirname(showWindowPath()), { recursive: true });
   fs.writeFileSync(showWindowPath(), String(Date.now()), "utf8");
@@ -93,15 +79,24 @@ export function consumePendingBlocking(): boolean {
 }
 
 export async function relaunchAsAdmin(args: string[] = []): Promise<void> {
-  const exe = process.execPath.replace(/'/g, "''");
-  const withElevated = args.includes("--elevated") ? args : [...args, "--elevated"];
-  const quoted = withElevated.map((a) => `'${a.replace(/'/g, "''")}'`).join(", ");
-  const argList = quoted ? `-ArgumentList ${quoted}` : "";
+  const bat = path.join(path.dirname(process.execPath), "Focus-Admin.bat");
+  const launchArgs = args.length > 0 ? args.join(" ") : "--show";
+  const target = fs.existsSync(bat) ? bat : process.execPath;
 
-  await exec("powershell.exe", [
-    "-NoProfile",
-    "-Command",
-    `Start-Process -FilePath '${exe}' -Verb RunAs ${argList}`,
-  ]);
+  if (target.endsWith(".bat")) {
+    await exec("powershell.exe", [
+      "-NoProfile",
+      "-Command",
+      `Start-Process -FilePath '${target.replace(/'/g, "''")}' -ArgumentList '${launchArgs.replace(/'/g, "''")}' -Verb RunAs`,
+    ]);
+  } else {
+    const quoted = args.map((a) => `'${a.replace(/'/g, "''")}'`).join(", ");
+    const argList = quoted ? `-ArgumentList ${quoted}` : "";
+    await exec("powershell.exe", [
+      "-NoProfile",
+      "-Command",
+      `Start-Process -FilePath '${process.execPath.replace(/'/g, "''")}' -Verb RunAs ${argList}`,
+    ]);
+  }
   app.quit();
 }

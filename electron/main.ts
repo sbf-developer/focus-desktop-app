@@ -1,11 +1,10 @@
 import path from "path";
 import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage } from "electron";
-import { DnsBlocker } from "./dns";
+import { cleanupOrphanedBlocking, DnsBlocker } from "./dns";
 import { ActivityTracker } from "./tracker";
 import { loadBlocklist, loadSettings, saveBlocklist, saveSettings } from "./storage";
 import {
   consumePendingBlocking,
-  isAnotherFocusRunning,
   isRunningAsAdmin,
   relaunchAsAdmin,
   setPendingBlocking,
@@ -26,7 +25,6 @@ let settings = loadSettings();
 const isDev = !app.isPackaged;
 const startHidden = process.argv.includes("--hidden");
 const forceShow = process.argv.includes("--show");
-const isElevatedLaunch = process.argv.includes("--elevated");
 
 function showMainWindow(): void {
   if (!mainWindow) return;
@@ -43,11 +41,17 @@ if (!gotLock) {
   app.on("second-instance", () => showMainWindow());
 }
 
+function launcherPath(): string {
+  return path.join(path.dirname(process.execPath), "Focus-Admin.bat");
+}
+
 function applyLaunchAtStartup(enabled: boolean): void {
+  if (!app.isPackaged) return;
+  const bat = launcherPath();
   app.setLoginItemSettings({
     openAtLogin: enabled,
-    path: process.execPath,
-    args: ["--hidden"],
+    path: bat,
+    args: enabled ? ["--hidden"] : [],
   });
 }
 
@@ -59,6 +63,7 @@ function statusPayload() {
     dns_redirect_ok: dns.dnsRedirectOk,
     blocklist_count: blocklist.length,
     launch_at_startup: settings.launchAtStartup,
+    is_admin: false as boolean,
     current_app: tracker.getCurrentApp(),
     current_domain: tracker.getCurrentDomain(),
     is_idle: tracker.getIsIdle(),
@@ -82,42 +87,28 @@ async function stopBlocking(): Promise<void> {
   setPendingBlocking(false);
 }
 
-async function ensureAdminIfNeeded(): Promise<boolean> {
-  if (await isRunningAsAdmin()) return true;
-  // Only elevate when blocking is on — not just because startup-on-login is enabled.
-  if (!settings.blockingEnabled) return true;
-
-  const args =
-    startHidden && !forceShow
-      ? ["--hidden", "--elevated"]
-      : ["--show", "--elevated"];
-  setPendingBlocking(true);
-  try {
-    await relaunchAsAdmin(args);
-    return false;
-  } catch {
-    // UAC denied — still open the app without blocking.
-    return true;
-  }
-}
-
 async function restoreBlockingOnLaunch(): Promise<void> {
   const pending = consumePendingBlocking();
   const shouldBlock = pending || settings.blockingEnabled;
-  if (!shouldBlock) return;
-  if (!(await isRunningAsAdmin())) return;
-
+  if (!shouldBlock) {
+    await cleanupOrphanedBlocking();
+    return;
+  }
+  if (!(await isRunningAsAdmin())) {
+    await cleanupOrphanedBlocking();
+    return;
+  }
   try {
     await startBlocking();
-    mainWindow?.webContents.send("blocking-changed");
   } catch {
-    /* UI shows error on next status poll */
+    await cleanupOrphanedBlocking();
+    settings.blockingEnabled = false;
+    blockingEnabled = false;
+    saveSettings(settings);
   }
 }
 
 function createWindow(): void {
-  const shouldShow = !startHidden || forceShow;
-
   mainWindow = new BrowserWindow({
     width: 960,
     height: 640,
@@ -140,7 +131,7 @@ function createWindow(): void {
   }
 
   mainWindow.once("ready-to-show", () => {
-    if (shouldShow) showMainWindow();
+    if (!startHidden || forceShow) showMainWindow();
   });
 
   mainWindow.on("close", (e) => {
@@ -158,32 +149,37 @@ function createTray(): void {
 
   let icon = nativeImage.createFromPath(iconPath);
   if (icon.isEmpty()) {
-    icon = nativeImage.createEmpty();
+    icon = nativeImage.createFromPath(
+      path.join(__dirname, "../src-tauri/icons/32x32.png")
+    );
   }
 
   tray = new Tray(icon);
   tray.setToolTip("Focus");
-  const menu = Menu.buildFromTemplate([
-    {
-      label: "Open Focus",
-      click: () => showMainWindow(),
-    },
-    { type: "separator" },
-    {
-      label: "Quit",
-      click: () => {
-        isQuitting = true;
-        app.quit();
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "Open Focus", click: () => showMainWindow() },
+      { type: "separator" },
+      {
+        label: "Quit",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
       },
-    },
-  ]);
-  tray.setContextMenu(menu);
+    ])
+  );
   tray.on("double-click", () => showMainWindow());
 }
 
 function registerIpc(): void {
   ipcMain.handle("get_stats", () => tracker.getStats());
-  ipcMain.handle("get_status", () => statusPayload());
+
+  ipcMain.handle("get_status", async () => ({
+    ...statusPayload(),
+    is_admin: await isRunningAsAdmin(),
+  }));
+
   ipcMain.handle("get_blocklist", () => blocklist);
 
   ipcMain.handle("add_domain", (_e, domain: string) => {
@@ -206,18 +202,16 @@ function registerIpc(): void {
     if (enabled) {
       settings.blockingEnabled = true;
       saveSettings(settings);
-
-      const admin = await isRunningAsAdmin();
-      if (!admin) {
+      if (!(await isRunningAsAdmin())) {
         setPendingBlocking(true);
-        await relaunchAsAdmin(["--show", "--elevated"]);
-        return { ...statusPayload(), blocking_enabled: true };
+        await relaunchAsAdmin(["--show"]);
+        return { ...statusPayload(), blocking_enabled: true, is_admin: false };
       }
       await startBlocking();
     } else {
       await stopBlocking();
     }
-    return statusPayload();
+    return { ...statusPayload(), is_admin: await isRunningAsAdmin() };
   });
 
   ipcMain.handle("set_launch_at_startup", (_e, enabled: boolean) => {
@@ -233,18 +227,8 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
-  if (!isElevatedLaunch && (await isAnotherFocusRunning())) {
-    signalShowExisting();
-    app.quit();
-    return;
-  }
-
-  if (!(await ensureAdminIfNeeded())) return;
-
   blockingEnabled = settings.blockingEnabled;
 
-  dns.updateBlocklist(blocklist);
-  applyLaunchAtStartup(settings.launchAtStartup);
   createWindow();
   createTray();
   registerIpc();
@@ -254,13 +238,15 @@ app.whenReady().then(async () => {
     app.quit();
   });
 
+  dns.updateBlocklist(blocklist);
+  applyLaunchAtStartup(settings.launchAtStartup);
+
   tracker.setOnUpdate((stats) => {
     mainWindow?.webContents.send("stats-updated", stats);
   });
   tracker.start(() => dns.lastDomain);
 
   await restoreBlockingOnLaunch();
-
   mainWindow?.webContents.send("blocking-changed");
 
   app.on("activate", () => {
@@ -271,13 +257,12 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  tray?.destroy();
   tray = null;
   dns.stop();
   tracker.stop();
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    /* keep running in tray on Windows */
-  }
+  /* keep running in tray on Windows */
 });

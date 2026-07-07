@@ -36,16 +36,13 @@
     },
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "Focus-Admin.bat"
     ],
     "extraResources": [
       {
         "from": "src-tauri/icons/icon.png",
         "to": "icon.png"
-      },
-      {
-        "from": "Focus-Admin.bat",
-        "to": "Focus-Admin.bat"
       }
     ],
     "win": {
@@ -57,8 +54,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": false,
       "shortcutName": "Focus",
       "include": "build/installer.nsh"
     }

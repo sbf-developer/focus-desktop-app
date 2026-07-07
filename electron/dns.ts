@@ -149,11 +149,15 @@ export class DnsBlocker {
     this.upstream?.close();
     this.socket = null;
     this.upstream = null;
-    configureSystemDns(false).catch(() => {});
-    removeHostsBlock().catch(() => {});
-    disableBrowserDoH(false).catch(() => {});
-    flushDnsCache().catch(() => {});
+    cleanupOrphanedBlocking().catch(() => {});
   }
+}
+
+export async function cleanupOrphanedBlocking(): Promise<void> {
+  await configureSystemDns(false);
+  await removeHostsBlock();
+  await disableBrowserDoH(false);
+  await flushDnsCache();
 }
 
 function isBlocked(domain: string, blocklist: Set<string>): boolean {
