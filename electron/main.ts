@@ -1,13 +1,21 @@
 import path from "path";
 import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage } from "electron";
-import { cleanupOrphanedBlocking, DnsBlocker } from "./dns";
+import {
+  cleanupOrphanedBlocking,
+  DnsBlocker,
+  ensureSystemUnblocked,
+  getNetworkingIssues,
+  restoreSystemNetworking,
+} from "./dns";
 import { ActivityTracker } from "./tracker";
 import { loadBlocklist, loadSettings, saveBlocklist, saveSettings } from "./storage";
 import {
   consumePendingBlocking,
+  consumePendingCleanup,
   isRunningAsAdmin,
   relaunchAsAdmin,
   setPendingBlocking,
+  setPendingCleanup,
   signalShowExisting,
   startShowWindowWatcher,
   startQuitForInstallWatcher,
@@ -55,6 +63,24 @@ function applyLaunchAtStartup(enabled: boolean): void {
   });
 }
 
+async function statusPayloadAsync() {
+  const issues = dns.running ? [] : await getNetworkingIssues();
+  const enabled = blockingEnabled || settings.blockingEnabled;
+  return {
+    blocking_enabled: enabled,
+    blocking_active: dns.running,
+    dns_redirect_ok: dns.dnsRedirectOk,
+    blocklist_count: blocklist.length,
+    launch_at_startup: settings.launchAtStartup,
+    networking_ok: issues.length === 0,
+    networking_issues: issues,
+    is_admin: false as boolean,
+    current_app: tracker.getCurrentApp(),
+    current_domain: tracker.getCurrentDomain(),
+    is_idle: tracker.getIsIdle(),
+  };
+}
+
 function statusPayload() {
   const enabled = blockingEnabled || settings.blockingEnabled;
   return {
@@ -63,6 +89,8 @@ function statusPayload() {
     dns_redirect_ok: dns.dnsRedirectOk,
     blocklist_count: blocklist.length,
     launch_at_startup: settings.launchAtStartup,
+    networking_ok: true,
+    networking_issues: [] as string[],
     is_admin: false as boolean,
     current_app: tracker.getCurrentApp(),
     current_domain: tracker.getCurrentDomain(),
@@ -80,11 +108,41 @@ async function startBlocking(): Promise<void> {
 }
 
 async function stopBlocking(): Promise<void> {
-  dns.stop();
+  await dns.stopLocal();
   blockingEnabled = false;
   settings.blockingEnabled = false;
   saveSettings(settings);
   setPendingBlocking(false);
+
+  if (!(await isRunningAsAdmin())) {
+    setPendingCleanup(true);
+    await relaunchAsAdmin(["--show", "--cleanup-dns"]);
+    return;
+  }
+
+  const result = await restoreSystemNetworking();
+  if (!result.ok) {
+    throw new Error(
+      "Could not fully restore internet settings. " +
+        result.issues.join(" ") +
+        " Try running Focus as Administrator, then turn blocking off again."
+    );
+  }
+}
+
+async function repairNetworking(): Promise<void> {
+  if (!(await isRunningAsAdmin())) {
+    setPendingCleanup(true);
+    await relaunchAsAdmin(["--show", "--cleanup-dns"]);
+    return;
+  }
+
+  const result = await restoreSystemNetworking();
+  if (!result.ok) {
+    throw new Error(
+      "Could not repair internet settings: " + result.issues.join(" ")
+    );
+  }
 }
 
 async function restoreBlockingOnLaunch(): Promise<void> {
@@ -176,7 +234,7 @@ function registerIpc(): void {
   ipcMain.handle("get_stats", () => tracker.getStats());
 
   ipcMain.handle("get_status", async () => ({
-    ...statusPayload(),
+    ...(await statusPayloadAsync()),
     is_admin: await isRunningAsAdmin(),
   }));
 
@@ -205,13 +263,18 @@ function registerIpc(): void {
       if (!(await isRunningAsAdmin())) {
         setPendingBlocking(true);
         await relaunchAsAdmin(["--show"]);
-        return { ...statusPayload(), blocking_enabled: true, is_admin: false };
+        return { ...(await statusPayloadAsync()), blocking_enabled: true, is_admin: false };
       }
       await startBlocking();
     } else {
       await stopBlocking();
     }
-    return { ...statusPayload(), is_admin: await isRunningAsAdmin() };
+    return { ...(await statusPayloadAsync()), is_admin: await isRunningAsAdmin() };
+  });
+
+  ipcMain.handle("repair_networking", async () => {
+    await repairNetworking();
+    return { ...(await statusPayloadAsync()), is_admin: await isRunningAsAdmin() };
   });
 
   ipcMain.handle("set_launch_at_startup", (_e, enabled: boolean) => {
@@ -228,6 +291,14 @@ function registerIpc(): void {
 
 app.whenReady().then(async () => {
   blockingEnabled = settings.blockingEnabled;
+
+  if (process.argv.includes("--cleanup-dns") || consumePendingCleanup()) {
+    await dns.stopLocal();
+    blockingEnabled = false;
+    settings.blockingEnabled = false;
+    saveSettings(settings);
+    await restoreSystemNetworking();
+  }
 
   createWindow();
   createTray();
@@ -246,6 +317,7 @@ app.whenReady().then(async () => {
   });
   tracker.start(() => dns.lastDomain);
 
+  await ensureSystemUnblocked();
   await restoreBlockingOnLaunch();
   mainWindow?.webContents.send("blocking-changed");
 
@@ -259,7 +331,10 @@ app.on("before-quit", () => {
   isQuitting = true;
   tray?.destroy();
   tray = null;
-  dns.stop();
+  void dns.stopLocal();
+  if (!blockingEnabled && !settings.blockingEnabled) {
+    void restoreSystemNetworking();
+  }
   tracker.stop();
 });
 

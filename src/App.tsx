@@ -126,6 +126,7 @@ function BlockPage({
   onToggleStartup,
   onAdd,
   onRemove,
+  onRepair,
   error,
 }: {
   blocklist: string[];
@@ -134,6 +135,7 @@ function BlockPage({
   onToggleStartup: (v: boolean) => void;
   onAdd: (d: string) => void;
   onRemove: (d: string) => void;
+  onRepair: () => void;
   error: string | null;
 }) {
   const [input, setInput] = useState("");
@@ -156,9 +158,19 @@ function BlockPage({
       </div>
 
       <div className="banner banner-info">
-        Turning blocking on will request Administrator access (needed for DNS).
-        Restart Chrome or Edge after enabling if a blocked site still loads.
+        Turning blocking on or off needs Administrator access (system DNS and hosts file).
+        Restart Chrome or Edge after changing blocking if sites behave unexpectedly.
       </div>
+
+      {!status.blocking_active && !status.networking_ok && (
+        <div className="banner banner-error">
+          Internet settings may not be fully restored:{" "}
+          {status.networking_issues.join(" · ")}
+          <button className="btn btn-ghost" style={{ marginTop: 8 }} onClick={onRepair}>
+            Restore internet settings
+          </button>
+        </div>
+      )}
 
       {error && <div className="banner banner-error">{error}</div>}
 
@@ -280,6 +292,8 @@ export default function App() {
     dns_redirect_ok: false,
     blocklist_count: 0,
     launch_at_startup: true,
+    networking_ok: true,
+    networking_issues: [],
     current_app: null,
     current_domain: null,
     is_idle: false,
@@ -339,8 +353,32 @@ export default function App() {
     try {
       const st = await api.setBlocking(enabled);
       setStatus(st);
+      if (!enabled && !st.networking_ok) {
+        setError(
+          "Blocking is off but internet settings may still need repair. " +
+            "Click Restore internet settings, or restart Focus as Administrator."
+        );
+      }
     } catch (e) {
       setError(String(e));
+      setStatus(await api.getStatus());
+    }
+  };
+
+  const handleRepair = async () => {
+    setError(null);
+    try {
+      const st = await api.repairNetworking();
+      setStatus(st);
+      if (!st.networking_ok) {
+        setError(
+          "Could not fully restore internet settings: " +
+            st.networking_issues.join(" ")
+        );
+      }
+    } catch (e) {
+      setError(String(e));
+      setStatus(await api.getStatus());
     }
   };
 
@@ -431,6 +469,7 @@ export default function App() {
             onToggleStartup={handleToggleStartup}
             onAdd={handleAdd}
             onRemove={handleRemove}
+            onRepair={handleRepair}
             error={error}
           />
         )}

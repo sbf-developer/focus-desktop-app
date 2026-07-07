@@ -120,7 +120,7 @@ impl DnsServer {
                 } else {
                     match forward_query(&upstream, &buf[..size], &query) {
                         Ok(resp) => resp,
-                        Err(_) => build_blocked_response(&query),
+                        Err(_) => build_servfail_response(&query),
                     }
                 };
 
@@ -150,8 +150,21 @@ impl DnsServer {
             flag.store(true, Ordering::SeqCst);
         }
         self.active.store(false, Ordering::SeqCst);
-        let _ = configure_system_dns(false);
+        let _ = cleanup_blocking();
     }
+
+    pub fn ensure_unblocked_if_not_running(&self) {
+        if !self.is_running() {
+            let _ = cleanup_blocking();
+        }
+    }
+}
+
+fn build_servfail_response(query: &Packet) -> Packet {
+    let mut resp = Packet::new_query_response(0x8182);
+    resp.id = query.id;
+    resp.questions = query.questions.clone();
+    resp
 }
 
 fn normalize_domain(d: &str) -> String {
@@ -197,7 +210,7 @@ fn configure_system_dns(enable: bool) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     if enable {
-        for name in ["Ethernet", "Wi-Fi", "WiFi"] {
+        for name in ["Ethernet", "Wi-Fi", "WiFi", "Ethernet 2", "Ethernet 3"] {
             let out = Command::new("netsh")
                 .args([
                     "interface", "ip", "set", "dns", &format!("name={name}"),
@@ -219,14 +232,84 @@ fn configure_system_dns(enable: bool) -> Result<(), String> {
             .creation_flags(CREATE_NO_WINDOW)
             .output();
     } else {
-        let _ = Command::new("powershell")
+        let reset = Command::new("powershell")
             .args([
                 "-NoProfile", "-Command",
                 "Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses }",
             ])
             .creation_flags(CREATE_NO_WINDOW)
             .output();
+        if reset.map(|o| o.status.success()).unwrap_or(false) {
+            return Ok(());
+        }
+        for name in ["Wi-Fi", "Ethernet", "WiFi", "Ethernet 2", "Ethernet 3"] {
+            let _ = Command::new("netsh")
+                .args([
+                    "interface", "ip", "set", "dns", &format!("name={name}"),
+                    "source=dhcp",
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
+        let _ = Command::new("ipconfig")
+            .args(["/flushdns"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn cleanup_blocking() -> Result<(), String> {
+    configure_system_dns(false)?;
+    remove_hosts_block()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+const HOSTS_START: &str = "# BEGIN FOCUS BLOCK";
+#[cfg(windows)]
+const HOSTS_END: &str = "# END FOCUS BLOCK";
+
+#[cfg(windows)]
+fn remove_hosts_block() -> Result<(), String> {
+    use std::fs;
+    use std::path::Path;
+
+    let path = Path::new(r"C:\Windows\System32\drivers\etc\hosts");
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+
+    let mut kept = Vec::new();
+    let mut in_block = false;
+    for line in content.lines() {
+        if line.trim() == HOSTS_START {
+            in_block = true;
+            continue;
+        }
+        if line.trim() == HOSTS_END {
+            in_block = false;
+            continue;
+        }
+        if !in_block {
+            kept.push(line);
+        }
+    }
+
+    let next = kept.join("\n");
+    let next = if next.is_empty() {
+        String::new()
+    } else {
+        format!("{next}\n")
+    };
+    let _ = fs::write(path, next);
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn cleanup_blocking() -> Result<(), String> {
     Ok(())
 }
 

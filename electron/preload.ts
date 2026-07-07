@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("focusApp", {
   addDomain: (domain: string) => ipcRenderer.invoke("add_domain", domain),
   removeDomain: (domain: string) => ipcRenderer.invoke("remove_domain", domain),
   setBlocking: (enabled: boolean) => ipcRenderer.invoke("set_blocking", enabled),
+  repairNetworking: () => ipcRenderer.invoke("repair_networking"),
   setLaunchAtStartup: (enabled: boolean) =>
     ipcRenderer.invoke("set_launch_at_startup", enabled),
   resetTodayStats: () => ipcRenderer.invoke("reset_today_stats"),

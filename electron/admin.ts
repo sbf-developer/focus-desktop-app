@@ -71,6 +71,28 @@ export function setPendingBlocking(enabled: boolean): void {
   }
 }
 
+const PENDING_CLEANUP_FILE = "pending-cleanup";
+
+function cleanupPath(): string {
+  return path.join(app.getPath("userData"), PENDING_CLEANUP_FILE);
+}
+
+export function setPendingCleanup(enabled: boolean): void {
+  const file = cleanupPath();
+  if (enabled) {
+    fs.writeFileSync(file, "1", "utf8");
+  } else if (fs.existsSync(file)) {
+    fs.unlinkSync(file);
+  }
+}
+
+export function consumePendingCleanup(): boolean {
+  const file = cleanupPath();
+  if (!fs.existsSync(file)) return false;
+  fs.unlinkSync(file);
+  return true;
+}
+
 export function consumePendingBlocking(): boolean {
   const file = pendingPath();
   if (!fs.existsSync(file)) return false;

@@ -1,9 +1,15 @@
 import dgram from "dgram";
+import dns from "dns/promises";
 import fs from "fs";
 import dnsPacket from "dns-packet";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { normalizeDomain } from "./storage";
+
+export interface RestoreResult {
+  ok: boolean;
+  issues: string[];
+}
 
 const exec = promisify(execFile);
 const UPSTREAM = "8.8.8.8";
@@ -123,7 +129,7 @@ export class DnsBlocker {
           await flushDnsCache();
 
           if (!this._dnsRedirectOk) {
-            this.stop();
+            await this.stop();
             reject(
               new Error(
                 "Could not redirect Windows DNS to 127.0.0.1. " +
@@ -135,29 +141,108 @@ export class DnsBlocker {
           }
           resolve();
         } catch (err) {
-          this.stop();
+          await this.stop();
           reject(err instanceof Error ? err : new Error(String(err)));
         }
       });
     });
   }
 
-  stop(): void {
+  async stopLocal(): Promise<void> {
     this._running = false;
     this._dnsRedirectOk = false;
     this.socket?.close();
     this.upstream?.close();
     this.socket = null;
     this.upstream = null;
-    cleanupOrphanedBlocking().catch(() => {});
+  }
+
+  async stop(): Promise<RestoreResult> {
+    await this.stopLocal();
+    return restoreSystemNetworking();
   }
 }
 
-export async function cleanupOrphanedBlocking(): Promise<void> {
+export async function isSystemDnsStuck(): Promise<boolean> {
+  try {
+    const output = await runPowerShell(`
+      $up = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
+      if (-not $up) { 'none' }
+      else {
+        $stuck = $false
+        foreach ($a in $up) {
+          $servers = (Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4).ServerAddresses
+          if ($servers -contains '127.0.0.1') { $stuck = $true }
+        }
+        if ($stuck) { 'stuck' } else { 'ok' }
+      }
+    `);
+    return output === "stuck";
+  } catch {
+    return false;
+  }
+}
+
+export async function hasHostsBlock(): Promise<boolean> {
+  try {
+    const content = fs.readFileSync(HOSTS_PATH, "utf8");
+    return content.includes(HOSTS_START);
+  } catch {
+    return false;
+  }
+}
+
+export async function getNetworkingIssues(): Promise<string[]> {
+  const issues: string[] = [];
+  if (await isSystemDnsStuck()) {
+    issues.push("Windows DNS is still pointing to 127.0.0.1");
+  }
+  if (await hasHostsBlock()) {
+    issues.push("Hosts file still contains Focus block entries");
+  }
+  if (issues.length === 0 && !(await verifyDnsResolution())) {
+    issues.push("DNS lookups are failing");
+  }
+  return issues;
+}
+
+export async function verifySystemRestored(): Promise<RestoreResult> {
+  const issues = await getNetworkingIssues();
+  return { ok: issues.length === 0, issues };
+}
+
+export async function restoreSystemNetworking(): Promise<RestoreResult> {
   await configureSystemDns(false);
   await removeHostsBlock();
   await disableBrowserDoH(false);
   await flushDnsCache();
+
+  let result = await verifySystemRestored();
+  if (!result.ok && (await isSystemDnsStuck())) {
+    await resetDnsViaNetsh();
+    await flushDnsCache();
+    result = await verifySystemRestored();
+  }
+  return result;
+}
+
+export async function ensureSystemUnblocked(): Promise<RestoreResult> {
+  const check = await verifySystemRestored();
+  if (check.ok) return check;
+  return restoreSystemNetworking();
+}
+
+export async function cleanupOrphanedBlocking(): Promise<RestoreResult> {
+  return restoreSystemNetworking();
+}
+
+export async function verifyDnsResolution(): Promise<boolean> {
+  try {
+    await dns.resolve4("google.com");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isBlocked(domain: string, blocklist: Set<string>): boolean {
@@ -229,13 +314,49 @@ async function configureSystemDns(enable: boolean): Promise<boolean> {
   try {
     await runPowerShell(`
       Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | ForEach-Object {
-        Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
+        Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses -ErrorAction Stop
       }
     `);
+    return !(await isSystemDnsStuck());
   } catch {
-    /* best effort */
+    /* fall through to netsh */
   }
-  return false;
+
+  return resetDnsViaNetsh();
+}
+
+async function resetDnsViaNetsh(): Promise<boolean> {
+  let changed = false;
+  const names = await listActiveAdapterNames();
+  for (const name of names) {
+    try {
+      await exec("netsh", [
+        "interface",
+        "ip",
+        "set",
+        "dns",
+        `name=${name}`,
+        "source=dhcp",
+      ]);
+      changed = true;
+    } catch {
+      /* try next */
+    }
+  }
+  if (!changed) return false;
+  return !(await isSystemDnsStuck());
+}
+
+async function listActiveAdapterNames(): Promise<string[]> {
+  try {
+    const output = await runPowerShell(`
+      Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | ForEach-Object { $_.Name }
+    `);
+    if (!output) return ["Wi-Fi", "Ethernet", "WiFi"];
+    return output.split(/\r?\n/).map((n) => n.trim()).filter(Boolean);
+  } catch {
+    return ["Wi-Fi", "Ethernet", "WiFi", "Ethernet 2", "Ethernet 3"];
+  }
 }
 
 async function updateHostsFile(blocklist: Set<string>): Promise<void> {

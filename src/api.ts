@@ -9,6 +9,7 @@ declare global {
       addDomain: (domain: string) => Promise<string[]>;
       removeDomain: (domain: string) => Promise<string[]>;
       setBlocking: (enabled: boolean) => Promise<AppStatus>;
+      repairNetworking: () => Promise<AppStatus>;
       setLaunchAtStartup: (enabled: boolean) => Promise<AppStatus>;
       resetTodayStats: () => Promise<void>;
       onStatsUpdated: (cb: (stats: DailyStats) => void) => () => void;
@@ -24,6 +25,7 @@ export const api = {
   addDomain: (domain: string) => window.focusApp.addDomain(domain),
   removeDomain: (domain: string) => window.focusApp.removeDomain(domain),
   setBlocking: (enabled: boolean) => window.focusApp.setBlocking(enabled),
+  repairNetworking: () => window.focusApp.repairNetworking(),
   setLaunchAtStartup: (enabled: boolean) =>
     window.focusApp.setLaunchAtStartup(enabled),
   resetTodayStats: () => window.focusApp.resetTodayStats(),

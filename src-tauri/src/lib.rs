@@ -59,6 +59,11 @@ pub fn run() {
                 .build(app)?;
 
             start_background_services(app.handle().clone());
+
+            if let Some(state) = app.try_state::<AppState>() {
+                state.dns.ensure_unblocked_if_not_running();
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
