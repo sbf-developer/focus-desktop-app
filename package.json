@@ -36,8 +36,13 @@
     },
     "files": [
       "dist/**/*",
-      "dist-electron/**/*",
-      "Focus-Admin.bat"
+      "dist-electron/**/*"
+    ],
+    "extraFiles": [
+      {
+        "from": "Focus-Admin.bat",
+        "to": "Focus-Admin.bat"
+      }
     ],
     "extraResources": [
       {
@@ -54,8 +59,9 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": false,
-      "createStartMenuShortcut": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
       "shortcutName": "Focus",
       "include": "build/installer.nsh"
     }
