@@ -180,8 +180,8 @@ function BlockPage({
             )}
           </div>
           <button
-            className={`toggle-btn${status.blocking_enabled ? " on" : ""}`}
-            onClick={() => onToggle(!status.blocking_enabled)}
+            className={`toggle-btn${status.blocking_enabled || status.blocking_active ? " on" : ""}`}
+            onClick={() => onToggle(!(status.blocking_enabled || status.blocking_active))}
             aria-label="Toggle blocking"
           />
         </div>

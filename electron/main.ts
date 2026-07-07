@@ -5,9 +5,12 @@ import { ActivityTracker } from "./tracker";
 import { loadBlocklist, loadSettings, saveBlocklist, saveSettings } from "./storage";
 import {
   consumePendingBlocking,
+  isAnotherFocusRunning,
   isRunningAsAdmin,
   relaunchAsAdmin,
   setPendingBlocking,
+  signalShowExisting,
+  startShowWindowWatcher,
 } from "./admin";
 
 let mainWindow: BrowserWindow | null = null;
@@ -21,15 +24,21 @@ let settings = loadSettings();
 
 const isDev = !app.isPackaged;
 const startHidden = process.argv.includes("--hidden");
+const forceShow = process.argv.includes("--show");
+
+function showMainWindow(): void {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
+  signalShowExisting();
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    mainWindow?.show();
-    mainWindow?.focus();
-  });
+  app.on("second-instance", () => showMainWindow());
 }
 
 function applyLaunchAtStartup(enabled: boolean): void {
@@ -41,8 +50,9 @@ function applyLaunchAtStartup(enabled: boolean): void {
 }
 
 function statusPayload() {
+  const enabled = blockingEnabled || settings.blockingEnabled;
   return {
-    blocking_enabled: blockingEnabled,
+    blocking_enabled: enabled,
     blocking_active: dns.running,
     dns_redirect_ok: dns.dnsRedirectOk,
     blocklist_count: blocklist.length,
@@ -70,17 +80,20 @@ async function stopBlocking(): Promise<void> {
   setPendingBlocking(false);
 }
 
+async function ensureAdminIfNeeded(): Promise<boolean> {
+  const needsAdmin = settings.blockingEnabled || settings.launchAtStartup;
+  if (!needsAdmin || (await isRunningAsAdmin())) return true;
+
+  const args = startHidden && !forceShow ? ["--hidden"] : ["--show"];
+  if (settings.blockingEnabled) setPendingBlocking(true);
+  await relaunchAsAdmin(args);
+  return false;
+}
+
 async function restoreBlockingOnLaunch(): Promise<void> {
   const pending = consumePendingBlocking();
   const shouldBlock = pending || settings.blockingEnabled;
   if (!shouldBlock) return;
-
-  const admin = await isRunningAsAdmin();
-  if (!admin) {
-    setPendingBlocking(true);
-    await relaunchAsAdmin();
-    return;
-  }
 
   try {
     await startBlocking();
@@ -97,7 +110,7 @@ function createWindow(): void {
     minWidth: 800,
     minHeight: 520,
     title: "Focus",
-    show: !startHidden,
+    show: !startHidden || forceShow,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -135,22 +148,19 @@ function createTray(): void {
   const menu = Menu.buildFromTemplate([
     {
       label: "Open Focus",
-      click: () => {
-        mainWindow?.show();
-        mainWindow?.focus();
-      },
+      click: () => showMainWindow(),
     },
     { type: "separator" },
-    { label: "Quit", click: () => {
-      isQuitting = true;
-      app.quit();
-    } },
+    {
+      label: "Quit",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
   ]);
   tray.setContextMenu(menu);
-  tray.on("double-click", () => {
-    mainWindow?.show();
-    mainWindow?.focus();
-  });
+  tray.on("double-click", () => showMainWindow());
 }
 
 function registerIpc(): void {
@@ -176,12 +186,13 @@ function registerIpc(): void {
 
   ipcMain.handle("set_blocking", async (_e, enabled: boolean) => {
     if (enabled) {
+      settings.blockingEnabled = true;
+      saveSettings(settings);
+
       const admin = await isRunningAsAdmin();
       if (!admin) {
-        settings.blockingEnabled = true;
-        saveSettings(settings);
         setPendingBlocking(true);
-        await relaunchAsAdmin();
+        await relaunchAsAdmin(["--show"]);
         return { ...statusPayload(), blocking_enabled: true };
       }
       await startBlocking();
@@ -204,11 +215,22 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
+  if (await isAnotherFocusRunning()) {
+    signalShowExisting();
+    app.quit();
+    return;
+  }
+
+  if (!(await ensureAdminIfNeeded())) return;
+
+  blockingEnabled = settings.blockingEnabled;
+
   dns.updateBlocklist(blocklist);
   applyLaunchAtStartup(settings.launchAtStartup);
   createWindow();
   createTray();
   registerIpc();
+  startShowWindowWatcher(showMainWindow);
 
   tracker.setOnUpdate((stats) => {
     mainWindow?.webContents.send("stats-updated", stats);
@@ -217,9 +239,12 @@ app.whenReady().then(async () => {
 
   await restoreBlockingOnLaunch();
 
+  if (forceShow) showMainWindow();
+  mainWindow?.webContents.send("blocking-changed");
+
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    else mainWindow?.show();
+    else showMainWindow();
   });
 });
 
