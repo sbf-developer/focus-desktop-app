@@ -2,7 +2,7 @@ import path from "path";
 import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage } from "electron";
 import { DnsBlocker } from "./dns";
 import { ActivityTracker } from "./tracker";
-import { loadBlocklist, saveBlocklist } from "./storage";
+import { loadBlocklist, loadSettings, saveBlocklist, saveSettings } from "./storage";
 import {
   consumePendingBlocking,
   isRunningAsAdmin,
@@ -16,8 +16,78 @@ const dns = new DnsBlocker();
 const tracker = new ActivityTracker();
 let blockingEnabled = false;
 let blocklist = loadBlocklist();
+let settings = loadSettings();
 
 const isDev = !app.isPackaged;
+const startHidden = process.argv.includes("--hidden");
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
+}
+
+function applyLaunchAtStartup(enabled: boolean): void {
+  app.setLoginItemSettings({
+    openAtLogin: enabled,
+    path: process.execPath,
+    args: ["--hidden"],
+  });
+}
+
+function statusPayload() {
+  return {
+    blocking_enabled: blockingEnabled,
+    blocking_active: dns.running,
+    dns_redirect_ok: dns.dnsRedirectOk,
+    blocklist_count: blocklist.length,
+    launch_at_startup: settings.launchAtStartup,
+    current_app: tracker.getCurrentApp(),
+    current_domain: tracker.getCurrentDomain(),
+    is_idle: tracker.getIsIdle(),
+  };
+}
+
+async function startBlocking(): Promise<void> {
+  dns.updateBlocklist(blocklist);
+  await dns.start();
+  blockingEnabled = true;
+  settings.blockingEnabled = true;
+  saveSettings(settings);
+  setPendingBlocking(false);
+}
+
+async function stopBlocking(): Promise<void> {
+  dns.stop();
+  blockingEnabled = false;
+  settings.blockingEnabled = false;
+  saveSettings(settings);
+  setPendingBlocking(false);
+}
+
+async function restoreBlockingOnLaunch(): Promise<void> {
+  const pending = consumePendingBlocking();
+  const shouldBlock = pending || settings.blockingEnabled;
+  if (!shouldBlock) return;
+
+  const admin = await isRunningAsAdmin();
+  if (!admin) {
+    setPendingBlocking(true);
+    await relaunchAsAdmin();
+    return;
+  }
+
+  try {
+    await startBlocking();
+    mainWindow?.webContents.send("blocking-changed");
+  } catch {
+    /* UI shows error on next status poll */
+  }
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -26,7 +96,7 @@ function createWindow(): void {
     minWidth: 800,
     minHeight: 520,
     title: "Focus",
-    show: true,
+    show: !startHidden,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -81,17 +151,7 @@ function createTray(): void {
 
 function registerIpc(): void {
   ipcMain.handle("get_stats", () => tracker.getStats());
-
-  ipcMain.handle("get_status", () => ({
-    blocking_enabled: blockingEnabled,
-    blocking_active: dns.running,
-    dns_redirect_ok: dns.dnsRedirectOk,
-    blocklist_count: blocklist.length,
-    current_app: tracker.getCurrentApp(),
-    current_domain: tracker.getCurrentDomain(),
-    is_idle: tracker.getIsIdle(),
-  }));
-
+  ipcMain.handle("get_status", () => statusPayload());
   ipcMain.handle("get_blocklist", () => blocklist);
 
   ipcMain.handle("add_domain", (_e, domain: string) => {
@@ -114,35 +174,24 @@ function registerIpc(): void {
     if (enabled) {
       const admin = await isRunningAsAdmin();
       if (!admin) {
+        settings.blockingEnabled = true;
+        saveSettings(settings);
         setPendingBlocking(true);
         await relaunchAsAdmin();
-        return {
-          blocking_enabled: false,
-          blocking_active: false,
-          dns_redirect_ok: false,
-          blocklist_count: blocklist.length,
-          current_app: tracker.getCurrentApp(),
-          current_domain: tracker.getCurrentDomain(),
-          is_idle: tracker.getIsIdle(),
-        };
+        return { ...statusPayload(), blocking_enabled: true };
       }
-      dns.updateBlocklist(blocklist);
-      await dns.start();
-      blockingEnabled = true;
+      await startBlocking();
     } else {
-      setPendingBlocking(false);
-      dns.stop();
-      blockingEnabled = false;
+      await stopBlocking();
     }
-    return {
-      blocking_enabled: blockingEnabled,
-      blocking_active: dns.running,
-      dns_redirect_ok: dns.dnsRedirectOk,
-      blocklist_count: blocklist.length,
-      current_app: tracker.getCurrentApp(),
-      current_domain: tracker.getCurrentDomain(),
-      is_idle: tracker.getIsIdle(),
-    };
+    return statusPayload();
+  });
+
+  ipcMain.handle("set_launch_at_startup", (_e, enabled: boolean) => {
+    settings.launchAtStartup = enabled;
+    saveSettings(settings);
+    applyLaunchAtStartup(enabled);
+    return statusPayload();
   });
 
   ipcMain.handle("reset_today_stats", () => {
@@ -152,6 +201,7 @@ function registerIpc(): void {
 
 app.whenReady().then(async () => {
   dns.updateBlocklist(blocklist);
+  applyLaunchAtStartup(settings.launchAtStartup);
   createWindow();
   createTray();
   registerIpc();
@@ -161,16 +211,7 @@ app.whenReady().then(async () => {
   });
   tracker.start(() => dns.lastDomain);
 
-  if (consumePendingBlocking() && (await isRunningAsAdmin())) {
-    try {
-      dns.updateBlocklist(blocklist);
-      await dns.start();
-      blockingEnabled = true;
-      mainWindow?.webContents.send("blocking-changed");
-    } catch {
-      /* UI will show error on next status poll */
-    }
-  }
+  await restoreBlockingOnLaunch();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

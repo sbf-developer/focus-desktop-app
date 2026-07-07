@@ -68,3 +68,32 @@ export function normalizeDomain(d: string): string {
     .replace(/\.$/, "")
     .replace(/^www\./, "");
 }
+
+export interface AppSettings {
+  launchAtStartup: boolean;
+  blockingEnabled: boolean;
+}
+
+const DEFAULT_SETTINGS: AppSettings = {
+  launchAtStartup: true,
+  blockingEnabled: false,
+};
+
+export function loadSettings(): AppSettings {
+  const file = path.join(dataDir(), "settings.json");
+  if (fs.existsSync(file)) {
+    try {
+      return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(file, "utf8")) };
+    } catch {
+      /* fall through */
+    }
+  }
+  return { ...DEFAULT_SETTINGS };
+}
+
+export function saveSettings(settings: AppSettings): void {
+  fs.writeFileSync(
+    path.join(dataDir(), "settings.json"),
+    JSON.stringify(settings, null, 2)
+  );
+}

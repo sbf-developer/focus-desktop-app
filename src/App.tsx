@@ -123,6 +123,7 @@ function BlockPage({
   blocklist,
   status,
   onToggle,
+  onToggleStartup,
   onAdd,
   onRemove,
   error,
@@ -130,6 +131,7 @@ function BlockPage({
   blocklist: string[];
   status: AppStatus;
   onToggle: (v: boolean) => void;
+  onToggleStartup: (v: boolean) => void;
   onAdd: (d: string) => void;
   onRemove: (d: string) => void;
   error: string | null;
@@ -216,6 +218,24 @@ function BlockPage({
           )}
         </div>
       </div>
+
+      <div className="card">
+        <div className="block-hero">
+          <div className="block-hero-text">
+            <h2>Run in background</h2>
+            <p>
+              Start Focus automatically when you log in. It stays in the system
+              tray, keeps tracking activity, and restores blocking if you left
+              it on.
+            </p>
+          </div>
+          <button
+            className={`toggle-btn${status.launch_at_startup ? " on" : ""}`}
+            onClick={() => onToggleStartup(!status.launch_at_startup)}
+            aria-label="Start with Windows"
+          />
+        </div>
+      </div>
     </>
   );
 }
@@ -259,6 +279,7 @@ export default function App() {
     blocking_active: false,
     dns_redirect_ok: false,
     blocklist_count: 0,
+    launch_at_startup: true,
     current_app: null,
     current_domain: null,
     is_idle: false,
@@ -317,6 +338,16 @@ export default function App() {
     setError(null);
     try {
       const st = await api.setBlocking(enabled);
+      setStatus(st);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleToggleStartup = async (enabled: boolean) => {
+    setError(null);
+    try {
+      const st = await api.setLaunchAtStartup(enabled);
       setStatus(st);
     } catch (e) {
       setError(String(e));
@@ -397,6 +428,7 @@ export default function App() {
             blocklist={blocklist}
             status={status}
             onToggle={handleToggle}
+            onToggleStartup={handleToggleStartup}
             onAdd={handleAdd}
             onRemove={handleRemove}
             error={error}

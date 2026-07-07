@@ -9,6 +9,7 @@ export interface AppStatus {
   blocking_active: boolean;
   dns_redirect_ok: boolean;
   blocklist_count: number;
+  launch_at_startup: boolean;
   current_app: string | null;
   current_domain: string | null;
   is_idle: boolean;
