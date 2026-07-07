@@ -34,6 +34,12 @@ export function formatDuration(seconds: number): string {
   return `${m}m`;
 }
 
+export function displayDomain(raw: string): string {
+  const trimmed = raw.trim().toLowerCase().replace(/^www\./, "");
+  const withoutProtocol = trimmed.replace(/^https?:\/\//, "");
+  return withoutProtocol.split(/[/?#:]/)[0] || raw;
+}
+
 export function sortedEntries(map: Record<string, number>): [string, number][] {
   return Object.entries(map).sort((a, b) => b[1] - a[1]);
 }

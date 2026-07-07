@@ -1,6 +1,6 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { DailyStats, loadStats, saveStats } from "./storage";
+import { DailyStats, loadStats, normalizeDomain, saveStats } from "./storage";
 
 const exec = promisify(execFile);
 
@@ -105,7 +105,9 @@ export class ActivityTracker {
         const app = friendlyName(proc);
         const domainFromTitle = domainFromWindowTitle(title);
         const dnsDomain = getDnsDomain();
-        const domain = dnsDomain ?? domainFromTitle;
+        const domain = dnsDomain
+          ? extractHost(dnsDomain)
+          : domainFromTitle;
 
         this.tick(app, domain, idle);
       } catch {
@@ -163,8 +165,10 @@ export class ActivityTracker {
     }
 
     if (domain && domain.includes(".") && !domain.endsWith(".local")) {
-      const norm = domain.replace(/^www\./, "").toLowerCase();
-      this.stats.domains[norm] = (this.stats.domains[norm] ?? 0) + 1;
+      const norm = normalizeDomain(extractHost(domain));
+      if (norm.includes(".")) {
+        this.stats.domains[norm] = (this.stats.domains[norm] ?? 0) + 1;
+      }
     }
 
     const total = Object.values(this.stats.apps).reduce((a, b) => a + b, 0);
@@ -189,6 +193,12 @@ function domainFromWindowTitle(title: string): string | null {
   for (const [key, domain] of SITE_MAP) {
     if (site.includes(key)) return domain;
   }
-  if (site.includes(".")) return site;
+  if (site.includes(".")) return extractHost(site);
   return null;
+}
+
+function extractHost(raw: string): string {
+  const trimmed = raw.trim().toLowerCase();
+  const withoutProtocol = trimmed.replace(/^https?:\/\//, "");
+  return withoutProtocol.split(/[/?#:]/)[0].replace(/^www\./, "");
 }

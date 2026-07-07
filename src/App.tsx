@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, formatDuration, sortedEntries } from "./api";
+import { api, formatDuration, sortedEntries, displayDomain } from "./api";
 import type { AppStatus, DailyStats, Tab } from "./types";
 
 function ActivityList({
@@ -15,9 +15,13 @@ function ActivityList({
   }
   return (
     <div className="activity-list">
-      {items.map(([name, secs]) => (
+      {items.map(([name, secs]) => {
+        const label = displayDomain(name);
+        return (
         <div className="activity-row" key={name}>
-          <span className="activity-name">{name}</span>
+          <span className="activity-name" title={name}>
+            {label}
+          </span>
           <div className="activity-bar-wrap">
             <div
               className="activity-bar"
@@ -26,7 +30,8 @@ function ActivityList({
           </div>
           <span className="activity-time">{formatDuration(secs)}</span>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -260,6 +265,28 @@ export default function App() {
   });
   const [blocklist, setBlocklist] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem("focus-sidebar") === "collapsed"
+  );
+  const [narrowWindow, setNarrowWindow] = useState(
+    () => window.innerWidth < 900
+  );
+
+  useEffect(() => {
+    const onResize = () => setNarrowWindow(window.innerWidth < 900);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const sidebarMinimized = sidebarCollapsed || narrowWindow;
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem("focus-sidebar", next ? "collapsed" : "expanded");
+      return next;
+    });
+  };
 
   const refresh = useCallback(async () => {
     const [s, st, bl] = await Promise.all([
@@ -320,27 +347,43 @@ export default function App() {
   ];
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <div className="logo">Focus</div>
+    <div className={`app${sidebarMinimized ? " sidebar-minimized" : ""}`}>
+      <aside className={`sidebar${sidebarMinimized ? " collapsed" : ""}`}>
+        <div className="sidebar-top">
+          <div className="logo">{sidebarMinimized ? "F" : "Focus"}</div>
+          {!narrowWindow && (
+            <button
+              type="button"
+              className="sidebar-toggle"
+              onClick={toggleSidebar}
+              aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {sidebarCollapsed ? "›" : "‹"}
+            </button>
+          )}
+        </div>
         <nav className="nav">
           {tabs.map((t) => (
             <button
               key={t.id}
               className={`nav-item${tab === t.id ? " active" : ""}`}
               onClick={() => setTab(t.id)}
+              title={sidebarMinimized ? t.label : undefined}
             >
               <span className="nav-icon">{t.icon}</span>
-              {t.label}
+              <span className="nav-label">{t.label}</span>
             </button>
           ))}
         </nav>
         <div className="sidebar-footer">
-          <div className="status-pill">
+          <div className="status-pill" title={status.blocking_active ? "Blocking on" : "Blocking off"}>
             <span
               className={`status-dot${status.blocking_active ? " active" : ""}`}
             />
-            {status.blocking_active ? "Blocking on" : "Blocking off"}
+            <span className="status-label">
+              {status.blocking_active ? "Blocking on" : "Blocking off"}
+            </span>
           </div>
         </div>
       </aside>
