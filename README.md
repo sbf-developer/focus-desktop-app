@@ -1,6 +1,8 @@
 # Focus
 
 Block distracting websites system-wide and track how you spend time on your computer.
+<img width="914" height="592" alt="image" src="https://github.com/user-attachments/assets/484282a8-fd68-4206-8c20-35d428261637" />
+
 
 ## Features
 
